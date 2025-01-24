@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_console.h"
 #include "usb/usb_host.h"
 #include "usb/msc_host.h"
 #include "usb/uvc_host.h"
@@ -29,7 +30,8 @@
 #define FPS                         CONFIG_DEMO_USB_UVC_DEVICE_FPS              // Camera FPS
 #define DECODE_EVERY_XTH_FRAME      CONFIG_DEMO_DECODE_EVERY_XTH_FRAME          // Every xth frame will be decoded and send to display. This save CPU time
 
-#define DECODE_WORKING_BUFFER_SIZE 4000 // We must increase JPEG decoder working buffer size
+#define DECODE_WORKING_BUFFER_SIZE  4000 // We must increase JPEG decoder working buffer size
+#define CONSOLE_PROMPT              CONFIG_IDF_TARGET
 
 #if CONFIG_SPIRAM
 #define NUMBER_OF_FRAME_BUFFERS     (3) // Number of frames from the camera
@@ -43,6 +45,7 @@ static uint16_t *fb = NULL;                 // Framebuffer for decoded data (to 
 static QueueHandle_t frame_queue = NULL;    // Queue of received frames that are passed to processing task
 static QueueHandle_t app_queue = NULL;      // Application Queue
 static uvc_host_stream_hdl_t stream;
+static esp_console_repl_t *repl = NULL;     // Console repl
 
 /**
  * @brief Application Queue and its messages ID
@@ -52,6 +55,8 @@ typedef struct {
         APP_MSC_DEVICE_CONNECTED,               // USB MSC device connect event
         APP_MSC_DEVICE_DISCONNECTED,            // USB MSC device disconnect event
         APP_UVC_DEVICE_DISCONNECTED,            // USB UVC device disconnect event
+        APP_UVC_STREAM_START,                   // Start UVC stream
+        APP_UVC_STREAM_STOP,                    // Stop UVC stream
     } id;
     union {
         uint8_t new_msc_dev_address;            // Address of new USB MSC device for APP_MSC_DEVICE_CONNECTED event
@@ -59,22 +64,93 @@ typedef struct {
     } data;
 } app_message_t;
 
+typedef struct {
+    bool msc_opened;
+    bool uvc_opened;
+} usb_devs_status_t;
+
+static usb_devs_status_t usb_devs_status = {
+    .msc_opened = false,
+    .uvc_opened = false,
+};
+
+
+static int console_start_stream(int argc, char **argv);
+static int console_stop_stream(int argc, char **argv);
+
+static const esp_console_cmd_t console_commands[] = {
+    {
+        .command = "start",
+        .help = "Start streaming video from USB Camera",
+        .hint = NULL,
+        .func = &console_start_stream,
+    },
+    {
+        .command = "stop",
+        .help = "Stop streaming video from USB Camera",
+        .hint = NULL,
+        .func = &console_stop_stream,
+    }
+};
+
+static int console_start_stream(int argc, char **argv)
+{
+    if (!usb_devs_status.uvc_opened) {
+        ESP_LOGW(TAG, "Console: Can't start stream, UVC device not opened");
+        return 0;
+    }
+
+    app_message_t stream_start_message = {
+            .id = APP_UVC_STREAM_START,
+    };
+    xQueueSend(app_queue, &stream_start_message, portMAX_DELAY);
+    return 0;
+}
+
+static int console_stop_stream(int argc, char **argv)
+{
+    if (!usb_devs_status.uvc_opened) {
+        ESP_LOGW(TAG, "Console: Can't stop stream, UVC device not opened");
+        return 0;
+    }
+
+    app_message_t stream_stop_message = {
+        .id = APP_UVC_STREAM_STOP,
+    };
+    xQueueSend(app_queue, &stream_stop_message, portMAX_DELAY);
+    return 0;
+}
 
 static void msc_event_cb(const msc_host_event_t *event, void *arg)
 {
-    if (event->event == MSC_DEVICE_CONNECTED) {
+    switch(event->event) {
+    case MSC_DEVICE_CONNECTED:
         ESP_LOGI(TAG, "MSC device connected (usb_addr=%d)", event->device.address);
-        app_message_t message = {
+
+        // Check if MSC device already connected
+        if (usb_devs_status.msc_opened) {
+            ESP_LOGW(TAG, "Another MSC device already connected, the demo can handle only one MSC device at a time");
+            break;
+        }
+
+        // Only one MSC Device present, send a message to the app queue to initialize the connected MSC device
+        app_message_t msc_dconn_message = {
             .id = APP_MSC_DEVICE_CONNECTED,
             .data.new_msc_dev_address = event->device.address,
         };
-        xQueueSend(app_queue, &message, portMAX_DELAY);
-    } else if (event->event == MSC_DEVICE_DISCONNECTED) {
+        xQueueSend(app_queue, &msc_dconn_message, portMAX_DELAY);
+        break;
+    case MSC_DEVICE_DISCONNECTED:
         ESP_LOGI(TAG, "MSC device disconnected");
-        app_message_t message = {
+
+        app_message_t msc_conn_message = {
             .id = APP_MSC_DEVICE_DISCONNECTED,
         };
-        xQueueSend(app_queue, &message, portMAX_DELAY);
+        xQueueSend(app_queue, &msc_conn_message, portMAX_DELAY);
+        break;
+    default:
+        ESP_LOGW(TAG, "Unsupported MSC event");
+        break;
     }
 }
 
@@ -148,11 +224,13 @@ static void frame_processing_task(void *pvParameters)
 
     while (1) {
         xQueueReceive(frame_queue, &frame, portMAX_DELAY);
-        ESP_LOGI(TAG, "MJPEG frame %dx%d %d bytes", frame->vs_format.h_res, frame->vs_format.v_res, frame->data_len);
+        ESP_LOGD(TAG, "MJPEG frame %dx%d %d bytes", frame->vs_format.h_res, frame->vs_format.v_res, frame->data_len);
 
         static int frame_i = 0;
 
-        msc_save_jpeg_frame(frame_i, frame->data, frame->data_len);
+        if (usb_devs_status.msc_opened) {
+            msc_save_jpeg_frame(frame_i, frame->data, frame->data_len);
+        }
 
         if (fb && ((frame_i % DECODE_EVERY_XTH_FRAME) == 0)) {
             frame_i = 0;
@@ -174,13 +252,13 @@ static void frame_processing_task(void *pvParameters)
             esp_jpeg_image_output_t outimg;
 
             if (ESP_OK == esp_jpeg_decode(&jpeg_cfg, &outimg)) {
-                ESP_LOGI(TAG, "Decoding OK");
+                ESP_LOGD(TAG, "Decoding OK");
                 //esp_lcd_panel_draw_bitmap(display_panel, 0, 0, outimg.width, outimg.height, (const void *)fb);
             } else {
                 ESP_LOGW(TAG, "Decoding failed");
             }
         } else {
-            ESP_LOGI(TAG, "Skipping decoding of received MJPEG frame");
+            ESP_LOGD(TAG, "Skipping decoding of received MJPEG frame");
         }
         frame_i++;
 
@@ -278,6 +356,35 @@ static void usb_task(void *args)
     vTaskDelete(NULL);
 }
 
+static void init_console(void)
+{
+    esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
+    /* Prompt to be printed before each line.
+     * This can be customized, made dynamic, etc.
+     */
+    repl_config.prompt = CONSOLE_PROMPT ">";
+    repl_config.max_cmdline_length = 16;
+
+    // Init console based on menuconfig settings
+#if defined(CONFIG_ESP_CONSOLE_UART_DEFAULT) || defined(CONFIG_ESP_CONSOLE_UART_CUSTOM)
+    esp_console_dev_uart_config_t hw_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_uart(&hw_config, &repl_config, &repl));
+
+    // USJ console can be set only on esp32p4, having separate USB PHYs for USB_OTG and USJ
+#elif defined(CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG) && defined(CONFIG_IDF_TARGET_ESP32P4)
+    esp_console_dev_usb_serial_jtag_config_t hw_config = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&hw_config, &repl_config, &repl));
+
+#else
+#error Unsupported console type
+#endif
+
+    for (int count = 0; count < sizeof(console_commands) / sizeof(esp_console_cmd_t); count++) {
+        ESP_ERROR_CHECK(esp_console_cmd_register(&console_commands[count]));
+    }
+
+    ESP_ERROR_CHECK(esp_console_start_repl(repl));
+}
 
 void app_main(void)
 {
@@ -302,39 +409,63 @@ void app_main(void)
         ESP_LOGW(TAG, "Insufficient memory for LCD frame buffer. LCD output disabled.");
     }
 
-    bool uvc_dev_connected = false;
+    init_console();
+
     TickType_t app_queue_ticks = pdMS_TO_TICKS(500);
     while(1) {
         app_message_t msg;
 
-        if (!uvc_dev_connected) {
+        if (!usb_devs_status.uvc_opened) {
             ESP_LOGI(TAG, "Opening UVC device 0x%04X:0x%04X\t%dx%d@%2.1fFPS...",
                      stream_config.usb.vid, stream_config.usb.pid, stream_config.vs_format.h_res, stream_config.vs_format.v_res, stream_config.vs_format.fps);
-            esp_err_t err = uvc_host_stream_open(&stream_config, pdMS_TO_TICKS(1000), &stream);
+            esp_err_t err = uvc_host_stream_open(&stream_config, pdMS_TO_TICKS(500), &stream);
             if (ESP_OK != err) {
                 //ESP_LOGI(TAG, "Failed to open device");
                 app_queue_ticks = pdMS_TO_TICKS(500);
             } else {
-                ESP_LOGI(TAG, "Opened device");
+                ESP_LOGI(TAG, "UVC device opened, opening stream");
                 ESP_ERROR_CHECK(uvc_host_stream_start(stream));
+                ESP_LOGI(TAG, "Stream opened, streaming...");
                 app_queue_ticks = portMAX_DELAY;
-                uvc_dev_connected = true;
+                usb_devs_status.uvc_opened = true;
             }
         }
 
         if (xQueueReceive(app_queue, &msg, app_queue_ticks)){
-            if (APP_MSC_DEVICE_CONNECTED == msg.id) {
+            switch (msg.id) {
+            case APP_MSC_DEVICE_CONNECTED:
                 ESP_LOGI(TAG, "MSC Device connected -> Init MSC Device");
                 msc_init_device(msg.data.new_msc_dev_address);
-            }
-            if (APP_MSC_DEVICE_DISCONNECTED == msg.id) {
+
+                // Record MSC device opened
+                usb_devs_status.msc_opened = true;
+                break;
+            case APP_MSC_DEVICE_DISCONNECTED:
                 ESP_LOGI(TAG, "MSC Device disconnected -> De-Init MSC Device");
                 msc_deinit_device();
-            }
-            if (APP_UVC_DEVICE_DISCONNECTED == msg.id) {
+
+                // Record MSC device closed
+                usb_devs_status.msc_opened = false;
+                break;
+            case APP_UVC_DEVICE_DISCONNECTED:
                 ESP_LOGI(TAG, "UVC Device disconnected -> Close the UVC stream");
                 ESP_ERROR_CHECK(uvc_host_stream_close(msg.data.uvc_stream_hdl));
-                uvc_dev_connected = false;
+
+                // Record UVC device closed
+                usb_devs_status.uvc_opened = false;
+                break;
+            case APP_UVC_STREAM_START:
+                ESP_LOGI(TAG, "UVC Starting stream");
+                uvc_host_stream_start(stream);
+
+                break;
+            case APP_UVC_STREAM_STOP:
+                ESP_LOGI(TAG, "UVC Stopping stream");
+                uvc_host_stream_stop(stream);
+
+                break;
+            default:
+                break;
             }
         }
     }

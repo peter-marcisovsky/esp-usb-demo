@@ -135,7 +135,7 @@ void msc_save_jpeg_frame(int frame_i, uint8_t *frame_data, size_t frame_len)
         if (written != frame_len) {
             ESP_LOGE(TAG, "Failed to write entire frame to file");
         } else {
-            ESP_LOGI(TAG, "Saved frame to %s", file_path);
+            ESP_LOGD(TAG, "Saved frame to %s", file_path);
         }
         fclose(f);
     }
