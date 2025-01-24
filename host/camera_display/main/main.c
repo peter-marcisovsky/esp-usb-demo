@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2022-2024 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2025 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
  */
@@ -7,8 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-#include <sys/stat.h>
-#include <dirent.h>
 #include <inttypes.h>
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -19,59 +17,48 @@
 #include "esp_log.h"
 #include "usb/usb_host.h"
 #include "usb/msc_host.h"
-#include "usb/msc_host_vfs.h"
-#include "ffconf.h"
-#include "errno.h"
-
-
-#include "usb/usb_host.h"
 #include "usb/uvc_host.h"
 #include "jpeg_decoder.h"
+#include "usb_storage.h"
 
-#define EXAMPLE_USB_HOST_PRIORITY   (15)
-#define EXAMPLE_USB_DEVICE_VID      (0x046d)
-#define EXAMPLE_USB_DEVICE_PID      (0x082b)
+// Configs
+#define EXAMPLE_USB_DEVICE_VID      CONFIG_DEMO_USB_UVC_DEVICE_VID              // Camera VID
+#define EXAMPLE_USB_DEVICE_PID      CONFIG_DEMO_USB_UVC_DEVICE_PID              // Camera PID
+#define FRAME_H_RES                 CONFIG_DEMO_USB_UVC_DEVICE_FRAME_H_RES      // Camera frame horizontal resolution
+#define FRAME_V_RES                 CONFIG_DEMO_USB_UVC_DEVICE_FRAME_V_RES      // Camera frame vertical resolution
+#define FPS                         CONFIG_DEMO_USB_UVC_DEVICE_FPS              // Camera FPS
+#define DECODE_EVERY_XTH_FRAME      CONFIG_DEMO_DECODE_EVERY_XTH_FRAME          // Every xth frame will be decoded and send to display. This save CPU time
+
+#define DECODE_WORKING_BUFFER_SIZE 4000 // We must increase JPEG decoder working buffer size
+
 #if CONFIG_SPIRAM
 #define NUMBER_OF_FRAME_BUFFERS     (3) // Number of frames from the camera
 #else
 #define NUMBER_OF_FRAME_BUFFERS     (2) // Number of frames from the camera
 #endif
-#define EXAMPLE_NUMBER_OF_STREAMS   (1)
-#define EXAMPLE_RECORDING_LENGTH_S  (5)
-#define DECODE_WORKING_BUFFER_SIZE 4000 // We must increase JPEG decoder working buffer size
-#define DECODE_EVERY_XTH_FRAME 2        // Every 2nd frame will be decoded and send to display. This save CPU time
-#define FRAME_H_RES                 352
-#define FRAME_V_RES                 288
-#define FPS                         15
 
-#define MNT_PATH         "/usb"     // Path in the Virtual File System, where the USB flash drive is going to be mounted
-const char *directory = "/usb/esp";
-const char *file_path = "/usb/esp/test.txt";
 
 static const char *TAG = "example";
-
-static uint16_t *fb = NULL; // Framebuffer for decoded data (to LCD)
-msc_host_device_handle_t msc_device = NULL;
-msc_host_vfs_handle_t vfs_handle = NULL;
-
-static QueueHandle_t frame_q = NULL; // Queue of received frames that are passed to processing task
+static uint16_t *fb = NULL;                 // Framebuffer for decoded data (to LCD)
+static QueueHandle_t frame_queue = NULL;    // Queue of received frames that are passed to processing task
+static QueueHandle_t app_queue = NULL;      // Application Queue
 static uvc_host_stream_hdl_t stream;
 
 /**
  * @brief Application Queue and its messages ID
  */
-static QueueHandle_t app_queue;
 typedef struct {
     enum {
-        APP_MSC_DEVICE_CONNECTED,       // USB MSC device connect event
-        APP_MSC_DEVICE_DISCONNECTED,    // USB MSC device disconnect event
-        APP_UVC_DEVICE_DISCONNECTED,    // USB UVC device disconnect event
+        APP_MSC_DEVICE_CONNECTED,               // USB MSC device connect event
+        APP_MSC_DEVICE_DISCONNECTED,            // USB MSC device disconnect event
+        APP_UVC_DEVICE_DISCONNECTED,            // USB UVC device disconnect event
     } id;
     union {
         uint8_t new_msc_dev_address;            // Address of new USB MSC device for APP_MSC_DEVICE_CONNECTED event
         uvc_host_stream_hdl_t uvc_stream_hdl;   // UVC Stream handle
     } data;
 } app_message_t;
+
 
 static void msc_event_cb(const msc_host_event_t *event, void *arg)
 {
@@ -91,103 +78,6 @@ static void msc_event_cb(const msc_host_event_t *event, void *arg)
     }
 }
 
-static void print_device_info(msc_host_device_info_t *info)
-{
-    const size_t megabyte = 1024 * 1024;
-    uint64_t capacity = ((uint64_t)info->sector_size * info->sector_count) / megabyte;
-
-    printf("Device info:\n");
-    printf("\t Capacity: %llu MB\n", capacity);
-    printf("\t Sector size: %"PRIu32"\n", info->sector_size);
-    printf("\t Sector count: %"PRIu32"\n", info->sector_count);
-    printf("\t PID: 0x%04X \n", info->idProduct);
-    printf("\t VID: 0x%04X \n", info->idVendor);
-#ifndef CONFIG_NEWLIB_NANO_FORMAT
-    wprintf(L"\t iProduct: %S \n", info->iProduct);
-    wprintf(L"\t iManufacturer: %S \n", info->iManufacturer);
-    wprintf(L"\t iSerialNumber: %S \n", info->iSerialNumber);
-#endif
-}
-
-static void msc_init_device(uint8_t new_device_address)
-{
-    // 1. MSC flash drive connected. Open it and map it to Virtual File System
-    ESP_ERROR_CHECK(msc_host_install_device(new_device_address, &msc_device));
-    const esp_vfs_fat_mount_config_t mount_config = {
-        .format_if_mount_failed = false,
-        .max_files = 3,
-        .allocation_unit_size = 8192,
-    };
-    ESP_ERROR_CHECK(msc_host_vfs_register(msc_device, MNT_PATH, &mount_config, &vfs_handle));
-
-    // 2. Print information about the connected disk
-    //msc_host_device_info_t info;
-    //ESP_ERROR_CHECK(msc_host_get_device_info(msc_device, &info));
-    //msc_host_print_descriptors(msc_device);
-    //print_device_info(&info);
-
-    // 3. List all the files in root directory
-    ESP_LOGI(TAG, "ls command output:");
-    struct dirent *d;
-    DIR *dh = opendir(MNT_PATH);
-    assert(dh);
-    while ((d = readdir(dh)) != NULL) {
-        printf("%s\n", d->d_name);
-    }
-    closedir(dh);
-
-    // Create /usb/esp directory
-    struct stat s = {0};
-    bool directory_exists = stat(directory, &s) == 0;
-    if (!directory_exists) {
-        if (mkdir(directory, 0775) != 0) {
-            ESP_LOGE(TAG, "mkdir failed with errno: %s", strerror(errno));
-        }
-    }
-
-    // Create /usb/esp/test.txt file, if it doesn't exist
-    if (stat(file_path, &s) != 0) {
-        ESP_LOGI(TAG, "Creating file");
-        FILE *f = fopen(file_path, "w");
-        if (f == NULL) {
-            ESP_LOGE(TAG, "Failed to open file for writing");
-            return;
-        }
-        fprintf(f, "Hello World!\n");
-        fclose(f);
-    }
-}
-
-static void msc_deinit_device(void)
-{
-    if (vfs_handle) {
-        ESP_ERROR_CHECK(msc_host_vfs_unregister(vfs_handle));
-        vfs_handle = NULL;
-    }
-    if (msc_device) {
-        ESP_ERROR_CHECK(msc_host_uninstall_device(msc_device));
-        msc_device = NULL;
-    }
-}
-
-static void msc_save_jpeg_frame(int frame_i, uint8_t *frame_data, size_t frame_len)
-{
-    char file_path[64];
-    sprintf(file_path, "/usb/esp/frame_%d.jpg", frame_i);
-
-    FILE *f = fopen(file_path, "wb");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file %s for writing", file_path);
-    } else {
-        size_t written = fwrite(frame_data, 1, frame_len, f);
-        if (written != frame_len) {
-            ESP_LOGE(TAG, "Failed to write entire frame to file");
-        } else {
-            ESP_LOGI(TAG, "Saved frame to %s", file_path);
-        }
-        fclose(f);
-    }
-}
 
 bool frame_callback(const uvc_host_frame_t *frame, void *user_ctx)
 {
@@ -209,9 +99,9 @@ bool frame_callback(const uvc_host_frame_t *frame, void *user_ctx)
     case UVC_VS_FORMAT_MJPEG: {
         // Attempt to put the new frame into the queue without checking if it is full.
         // If successful, we save processing time since we avoid the overhead of a full check for every frame.
-        BaseType_t frame_put_to_queue = xQueueSendToBack(frame_q, &frame, 0);
+        BaseType_t frame_put_to_queue = xQueueSendToBack(frame_queue, &frame, 0);
 
-        // Adding the frame to our queue should never fail, because our frame_q has the same length as the UVC driver queue (NUMBER_OF_FRAME_BUFFERS)
+        // Adding the frame to our queue should never fail, because our frame_queue has the same length as the UVC driver queue (NUMBER_OF_FRAME_BUFFERS)
         assert(frame_put_to_queue == pdPASS);
         break;
     }
@@ -221,6 +111,7 @@ bool frame_callback(const uvc_host_frame_t *frame, void *user_ctx)
     }
     return frame_processed;
 }
+
 
 static void stream_callback(const uvc_host_stream_event_data_t *event, void *user_ctx)
 {
@@ -248,14 +139,15 @@ static void stream_callback(const uvc_host_stream_event_data_t *event, void *use
     }
 }
 
-static void processing_task(void *pvParameters)
+
+static void frame_processing_task(void *pvParameters)
 {
     uvc_host_frame_t *frame;
     uint8_t *jpeg_working_buffer = malloc(DECODE_WORKING_BUFFER_SIZE);
     assert(jpeg_working_buffer);
 
     while (1) {
-        xQueueReceive(frame_q, &frame, portMAX_DELAY);
+        xQueueReceive(frame_queue, &frame, portMAX_DELAY);
         ESP_LOGI(TAG, "MJPEG frame %dx%d %d bytes", frame->vs_format.h_res, frame->vs_format.v_res, frame->data_len);
 
         static int frame_i = 0;
@@ -282,6 +174,7 @@ static void processing_task(void *pvParameters)
             esp_jpeg_image_output_t outimg;
 
             if (ESP_OK == esp_jpeg_decode(&jpeg_cfg, &outimg)) {
+                ESP_LOGI(TAG, "Decoding OK");
                 //esp_lcd_panel_draw_bitmap(display_panel, 0, 0, outimg.width, outimg.height, (const void *)fb);
             } else {
                 ESP_LOGW(TAG, "Decoding failed");
@@ -326,6 +219,7 @@ static const uvc_host_stream_config_t stream_config = {
         .urb_size = 4 * 1024,
     },
 };
+
 
 static void usb_task(void *args)
 {
@@ -379,29 +273,28 @@ static void usb_task(void *args)
     }
 
     vTaskDelay(10); // Give clients some time to uninstall
-    ESP_LOGI(TAG, "Deinitializing USB");
+    ESP_LOGI(TAG, "De-Initializing USB");
     ESP_ERROR_CHECK(usb_host_uninstall());
     vTaskDelete(NULL);
 }
 
+
 void app_main(void)
 {
-    // Create application message queue
+    // Create application message queue and frame queue
     app_queue = xQueueCreate(5, sizeof(app_message_t));
-    assert(app_queue);
-
-    // Create frame queue
-    frame_q = xQueueCreate(NUMBER_OF_FRAME_BUFFERS, sizeof (uvc_host_frame_t *));
-    assert(frame_q);
+    frame_queue = xQueueCreate(NUMBER_OF_FRAME_BUFFERS, sizeof (uvc_host_frame_t *));
+    assert(app_queue || frame_queue);
 
     // Create USB Host Lib handling task, install drivers
-    BaseType_t task_created = xTaskCreate(usb_task, "usb_task", 4096, xTaskGetCurrentTaskHandle(), 10, NULL);
+    BaseType_t task_created = xTaskCreate(usb_task, "usb_task", 4 * 1024, xTaskGetCurrentTaskHandle(), 10, NULL);
     assert(task_created == pdTRUE);
 
     // Wait until the drivers are installed
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    task_created = xTaskCreate(processing_task, "frame_process", 4 * 1024, NULL, 2, NULL);
+    // Create frame processing task
+    task_created = xTaskCreate(frame_processing_task, "frame_processing", 4 * 1024, NULL, 2, NULL);
     assert(task_created == pdTRUE);
 
     fb = heap_caps_aligned_alloc(64, FRAME_H_RES * FRAME_V_RES * 2, MALLOC_CAP_INTERNAL);
@@ -428,8 +321,6 @@ void app_main(void)
                 uvc_dev_connected = true;
             }
         }
-
-        printf("Main Loop\n");
 
         if (xQueueReceive(app_queue, &msg, app_queue_ticks)){
             if (APP_MSC_DEVICE_CONNECTED == msg.id) {

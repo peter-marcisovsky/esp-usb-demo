@@ -1,0 +1,41 @@
+menu "ESP-USB Demo Configuration"
+
+    config DEMO_USB_UVC_DEVICE_VID
+        hex "USB Camera VID"
+        range 0x0 0xffff
+        default 0x046d
+        help
+          Set VID number of the used USB Camera
+
+    config DEMO_USB_UVC_DEVICE_PID
+        hex "USB Camera PID"
+        range 0 0xffff
+        default 0x082b
+        help
+          Set PID number of the used USB Camera
+
+    config DEMO_USB_UVC_DEVICE_FRAME_H_RES
+        int "USB Camera horizontal resolution"
+        default 640
+        help
+          Set horizontal resolution of the used USB Camera
+
+    config DEMO_USB_UVC_DEVICE_FRAME_V_RES
+        int "USB Camera vertical resolution"
+        default 480
+        help
+          Set vertical resolution of the used USB Camera
+
+    config DEMO_USB_UVC_DEVICE_FPS
+        int "USB Camera FPS"
+        default 15
+        help
+          Set FPS (Frames Per Second) of the used USB Camera
+
+    config DEMO_DECODE_EVERY_XTH_FRAME
+        int "Decode every x-th frame"
+        default 2
+        help
+          Decode and send to display every x-th frame from the USB Camera
+
+endmenu
