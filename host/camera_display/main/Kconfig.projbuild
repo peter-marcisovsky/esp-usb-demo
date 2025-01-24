@@ -1,0 +1,139 @@
+menu "ESP-USB Demo Configuration"
+
+    menu "Camera 1"
+      config DEMO_USB_UVC_DEVICE_0_VID
+          hex "USB Camera VID"
+          range 0x0 0xffff
+          default 0x046d
+          help
+            Set VID number of the used USB Camera 1.
+
+      config DEMO_USB_UVC_DEVICE_0_PID
+          hex "USB Camera PID"
+          range 0 0xffff
+          default 0x094c
+          help
+            Set PID number of the used USB Camera 1.
+
+      menu "Full screen"
+        config DEMO_USB_UVC_DEVICE_0_FRAME_H_RES_FULL
+            int "USB Camera horizontal resolution"
+            default 1024
+            help
+              Set horizontal resolution of the used USB Camera 1 in full screen mode.
+              One video stream, one camera connected, one image drawn fully filling the display.
+
+        config DEMO_USB_UVC_DEVICE_0_FRAME_V_RES_FULL
+            int "USB Camera vertical resolution"
+            default 576
+            help
+              Set vertical resolution of the used USB Camera 1 in full screen mode.
+              One video stream, one camera connected, one image drawn fully filling the display.
+
+        config DEMO_USB_UVC_DEVICE_0_FPS_FULL
+            int "USB Camera FPS"
+            default 30
+            help
+              Set FPS (Frames Per Second) of the used USB Camera 1 in full screen mode.
+              One video stream, one camera connected, one image drawn fully filling the display.
+
+      endmenu # Full screen
+
+      menu "Half screen"
+        config DEMO_USB_UVC_DEVICE_0_FRAME_H_RES_HALF
+            int "USB Camera horizontal resolution"
+            default 640
+            help
+              Set horizontal resolution of the used USB Camera 1 in half screen mode.
+              Two video streams, two cameras connected, two images drawn on top of each other together fully filling the display.
+
+
+        config DEMO_USB_UVC_DEVICE_0_FRAME_V_RES_HALF
+            int "USB Camera vertical resolution"
+            default 480
+            help
+              Set vertical resolution of the used USB Camera 1.
+              Two video streams, two cameras connected, two images drawn on top of each other together fully filling the display.
+
+        config DEMO_USB_UVC_DEVICE_0_FPS_HALF
+            int "USB Camera FPS"
+            default 20
+            help
+              Set FPS (Frames Per Second) of the used USB Camera 1
+              Two video streams, two cameras connected, two images drawn on top of each other together fully filling the display.
+
+      endmenu # Half screen
+    endmenu # Camera 1
+
+    menu "Camera 2"
+      config DEMO_USB_UVC_DEVICE_1_VID
+          hex "USB Camera VID"
+          range 0x0 0xffff
+          default 0x046d
+          help
+            Set VID number of the used USB Camera 2
+
+      config DEMO_USB_UVC_DEVICE_1_PID
+          hex "USB Camera PID"
+          range 0 0xffff
+          default 0x082c
+          help
+            Set PID number of the used USB Camera 2
+
+      menu "Full screen"
+        config DEMO_USB_UVC_DEVICE_1_FRAME_H_RES_FULL
+            int "USB Camera horizontal resolution"
+            default 1024
+            help
+              Set horizontal resolution of the used USB Camera 2 in full screen mode.
+              One video stream, one camera connected, one image drawn fully filling the display.
+
+        config DEMO_USB_UVC_DEVICE_1_FRAME_V_RES_FULL
+            int "USB Camera vertical resolution"
+            default 576
+            help
+              Set vertical resolution of the used USB Camera 2 in full screen mode.
+              One video stream, one camera connected, one image drawn fully filling the display.
+
+        config DEMO_USB_UVC_DEVICE_1_FPS_FULL
+            int "USB Camera FPS"
+            default 30
+            help
+              Set FPS (Frames Per Second) of the used USB Camera 2 in full screen mode.
+              One video stream, one camera connected, one image drawn fully filling the display.
+
+      endmenu # Full screen
+
+      menu "Half screen"
+        config DEMO_USB_UVC_DEVICE_1_FRAME_H_RES_HALF
+            int "USB Camera horizontal resolution"
+            default 640
+            help
+              Set horizontal resolution of the used USB Camera 2 in half screen mode.
+              Two video streams, two cameras connected, two images drawn on top of each other together fully filling the display.
+
+
+        config DEMO_USB_UVC_DEVICE_1_FRAME_V_RES_HALF
+            int "USB Camera vertical resolution"
+            default 480
+            help
+              Set vertical resolution of the used USB Camera 2.
+              Two video streams, two cameras connected, two images drawn on top of each other together fully filling the display.
+
+        config DEMO_USB_UVC_DEVICE_1_FPS_HALF
+            int "USB Camera FPS"
+            default 20
+            help
+              Set FPS (Frames Per Second) of the used USB Camera 2.
+              Two video streams, two cameras connected, two images drawn on top of each other together fully filling the display.
+
+      endmenu # Half screen
+    endmenu # Camera 2
+
+    config DEMO_FRAME_BUFFS_COUNT
+        int "Frame buffers count"
+        default 3
+        help
+          Number of frame buffers for frame queue
+
+endmenu
