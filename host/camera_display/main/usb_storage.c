@@ -22,9 +22,8 @@
 // Path in the Virtual File System, where the USB flash drive is going to be mounted
 #define MNT_PATH                 "/usb"
 
-const char *directory_base =     "/usb/esp";                 // Base esp directory
-const char *directory_frames =   "/usb/esp/frames";          // Directory fro saving frames
-const char *info_file_path =     "/usb/esp/info.txt";        // Info file path
+const char *directory_frames =   "/usb/frames";          // Directory fro saving frames
+const char *info_file_path =     "/usb/info.txt";        // Info file path
 
 static const char *TAG =    "example: storage";
 
@@ -69,6 +68,7 @@ void msc_init_device(uint8_t new_device_address)
     msc_host_device_info_t info;
     ESP_ERROR_CHECK(msc_host_get_device_info(msc_device, &info));
     print_msc_device_info(&info);
+    msc_host_print_descriptors(msc_device);
 
     // 3. List all the files in root directory
     ESP_LOGI(TAG, "ls command output:");
@@ -80,16 +80,8 @@ void msc_init_device(uint8_t new_device_address)
     }
     closedir(dh);
 
-    // Create /usb/esp directory
+    // Create /usb/frames directory
     struct stat s = {0};
-    const bool base_directory_exists = stat(directory_base, &s) == 0;
-    if (!base_directory_exists) {
-        if (mkdir(directory_base, 0775) != 0) {
-            ESP_LOGE(TAG, "mkdir failed with errno: %s", strerror(errno));
-        }
-    }
-
-    // Create /usb/esp/frames directory
     const bool frames_directory_exists = stat(directory_frames, &s) == 0;
     if (!frames_directory_exists) {
         if (mkdir(directory_frames, 0775) != 0) {
@@ -97,7 +89,7 @@ void msc_init_device(uint8_t new_device_address)
         }
     }
 
-    // Create /usb/esp/info.txt file, if it doesn't exist
+    // Create /usb/info.txt file, if it doesn't exist
     if (stat(info_file_path, &s) != 0) {
         ESP_LOGI(TAG, "Creating file");
         FILE *f = fopen(info_file_path, "w");
@@ -125,9 +117,9 @@ void msc_deinit_device(void)
 void msc_save_jpeg_frame(int frame_i, uint8_t *frame_data, size_t frame_len)
 {
     char file_path[64];
-    sprintf(file_path, "%s/frame_%d.jpg", directory_frames, frame_i);
+    sprintf(file_path, "%s/%d.jpg", directory_frames, frame_i);
 
-    FILE *f = fopen(file_path, "wb");
+    FILE *f = fopen(file_path, "w");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open file %s for writing", file_path);
     } else {
