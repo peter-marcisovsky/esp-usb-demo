@@ -22,6 +22,8 @@
 #include "jpeg_decoder.h"
 #include "usb_storage.h"
 #include "argtable3/argtable3.h"
+#include "display.h"
+#include "esp_lcd_panel_ops.h"
 
 // Configs
 #define EXAMPLE_USB_DEVICE_VID      CONFIG_DEMO_USB_UVC_DEVICE_VID              // Camera VID
@@ -30,15 +32,10 @@
 #define FRAME_V_RES                 CONFIG_DEMO_USB_UVC_DEVICE_FRAME_V_RES      // Camera frame vertical resolution
 #define FPS                         CONFIG_DEMO_USB_UVC_DEVICE_FPS              // Camera FPS
 #define DECODE_EVERY_XTH_FRAME      CONFIG_DEMO_DECODE_EVERY_XTH_FRAME          // Every xth frame will be decoded and send to display. This save CPU time
+#define NUMBER_OF_FRAME_BUFFERS     CONFIG_DEMO_FRAME_BUFFS_COUNT               // Number of frames from the camera
 
-#define DECODE_WORKING_BUFFER_SIZE  4000 // We must increase JPEG decoder working buffer size
+#define DECODE_WORKING_BUFFER_SIZE  4096
 #define CONSOLE_PROMPT              CONFIG_IDF_TARGET
-
-#if CONFIG_SPIRAM
-#define NUMBER_OF_FRAME_BUFFERS     (3) // Number of frames from the camera
-#else
-#define NUMBER_OF_FRAME_BUFFERS     (2) // Number of frames from the camera
-#endif
 
 static const char *TAG = "esp-usb-demo";
 
@@ -95,6 +92,7 @@ static control_args_t stream_control_args, storage_control_args;
 static uint16_t *fb = NULL;                 // Framebuffer for decoded data (to LCD)
 static QueueHandle_t frame_queue = NULL;    // Queue of received frames that are passed to processing task
 static QueueHandle_t app_queue = NULL;      // Application Queue
+static esp_lcd_panel_handle_t display_panel;
 
 /**
  * @brief Console function for video stream control
@@ -338,7 +336,7 @@ static void frame_processing_task(void *pvParameters)
 {
     uvc_host_frame_t *frame;
     //uint8_t *jpeg_working_buffer = malloc(DECODE_WORKING_BUFFER_SIZE);
-    uint8_t *jpeg_working_buffer = heap_caps_aligned_calloc(64, DECODE_WORKING_BUFFER_SIZE, sizeof(uint8_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_32BIT);
+    uint8_t *jpeg_working_buffer = heap_caps_aligned_calloc(64, DECODE_WORKING_BUFFER_SIZE, sizeof(uint8_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_32BIT);
     assert(jpeg_working_buffer);
 
     uvc_host_stream_hdl_t *stream_hdl = (uvc_host_stream_hdl_t*)pvParameters;
@@ -354,7 +352,8 @@ static void frame_processing_task(void *pvParameters)
 
             // Save frame to USB flash drive
             if (usb_devs_status.msc_opened && usb_devs_status.msc_saving_frames) {
-                msc_save_jpeg_frame(frame_i, frame->data, frame->data_len);
+                static unsigned int frame_save_count = 0;
+                msc_save_jpeg_frame(frame_save_count++, frame->data, frame->data_len);
             }
 
             frame_i = 0;
@@ -375,9 +374,19 @@ static void frame_processing_task(void *pvParameters)
             };
             esp_jpeg_image_output_t outimg;
 
-            if (ESP_OK == esp_jpeg_decode(&jpeg_cfg, &outimg)) {
+            uint32_t start_cycle_decode = esp_cpu_get_cycle_count();
+            esp_err_t ret = esp_jpeg_decode(&jpeg_cfg, &outimg);
+            uint32_t end_cycle_decode = esp_cpu_get_cycle_count();
+
+            if (ESP_OK == ret) {
                 ESP_LOGD(TAG, "Decoding OK");
-                //esp_lcd_panel_draw_bitmap(display_panel, 0, 0, outimg.width, outimg.height, (const void *)fb);
+                vTaskDelay(10);
+                uint32_t start_cycle_draw = esp_cpu_get_cycle_count();
+                esp_lcd_panel_draw_bitmap(display_panel, 0, 0, outimg.width, outimg.height, (const void *)fb);
+                uint32_t end_cycle_draw = esp_cpu_get_cycle_count();
+
+                printf("decode = %ldk\n", (end_cycle_decode - start_cycle_decode)/1000);
+                printf("draw   = %ldk\n", (end_cycle_draw - start_cycle_draw)/1000);
             } else {
                 ESP_LOGW(TAG, "Decoding failed");
             }
@@ -416,15 +425,16 @@ static void usb_task(void *args)
         .task_priority = 5,
         .stack_size = 4096,
         .callback = msc_event_cb,
+        .core_id = 1,
     };
-    ESP_ERROR_CHECK(msc_host_install(&msc_config));
+    //ESP_ERROR_CHECK(msc_host_install(&msc_config));
 
 
     ESP_LOGI(TAG, "Installing UVC driver");
     const uvc_host_driver_config_t uvc_driver_config = {
         .driver_task_stack_size = 6 * 1024,
         .driver_task_priority = 6,
-        .xCoreID = tskNO_AFFINITY,
+        .xCoreID = 1,
         .create_background_task = true,
     };
     ESP_ERROR_CHECK(uvc_host_install(&uvc_driver_config));
@@ -458,13 +468,19 @@ static void usb_task(void *args)
 
 void app_main(void)
 {
+    esp_lcd_panel_io_handle_t display_io;
+    const bsp_display_config_t config = {};
+
+    bsp_display_new(&config, &display_panel, &display_io);
+    bsp_display_backlight_on();
+
     // Create application message queue and frame queue
     app_queue = xQueueCreate(5, sizeof(app_message_t));
     frame_queue = xQueueCreate(NUMBER_OF_FRAME_BUFFERS, sizeof (uvc_host_frame_t *));
     assert(app_queue || frame_queue);
 
     // Create USB Host Lib handling task, install drivers
-    BaseType_t task_created = xTaskCreate(usb_task, "usb_task", 4 * 1024, xTaskGetCurrentTaskHandle(), 10, NULL);
+    BaseType_t task_created = xTaskCreatePinnedToCore(usb_task, "usb_task", 4 * 1024, xTaskGetCurrentTaskHandle(), 10, NULL, 1);
     assert(task_created == pdTRUE);
 
     // Wait until the drivers are installed
@@ -472,7 +488,7 @@ void app_main(void)
 
     // Create frame processing task
     uvc_host_stream_hdl_t stream_hdl = NULL;
-    task_created = xTaskCreate(frame_processing_task, "frame_processing", 4 * 1024, (void*)(&stream_hdl), 2, NULL);
+    task_created = xTaskCreatePinnedToCore(frame_processing_task, "frame_task", 4 * 1024, (void*)(&stream_hdl), 2, NULL, 0);
     assert(task_created == pdTRUE);
 
     fb = heap_caps_aligned_calloc(64, FRAME_V_RES * FRAME_H_RES, sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_32BIT);
@@ -480,7 +496,7 @@ void app_main(void)
         ESP_LOGW(TAG, "Insufficient memory for LCD frame buffer. LCD output disabled.");
     }
 
-    init_repl_console();
+    //init_repl_console();
 
     // Stream config
     const uvc_host_stream_config_t stream_config = {
@@ -500,7 +516,7 @@ void app_main(void)
         },
         .advanced = {
             .number_of_frame_buffers = NUMBER_OF_FRAME_BUFFERS,
-            .frame_size = 30 * 1024,
+            .frame_size = 80 * 1024,
     #if CONFIG_SPIRAM
             .frame_heap_caps = MALLOC_CAP_SPIRAM,
     #else

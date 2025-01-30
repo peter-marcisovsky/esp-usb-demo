@@ -32,6 +32,12 @@ menu "ESP-USB Demo Configuration"
         help
           Set FPS (Frames Per Second) of the used USB Camera
 
+    config DEMO_FRAME_BUFFS_COUNT
+        int "Frame buffers count"
+        default 3
+        help
+          Number of frame buffers for frame queue
+
     config DEMO_DECODE_EVERY_XTH_FRAME
         int "Decode every x-th frame"
         default 2
