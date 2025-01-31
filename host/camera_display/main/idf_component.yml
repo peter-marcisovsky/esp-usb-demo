@@ -4,7 +4,3 @@ dependencies:
   usb_host_msc: "^1.1.1"
   usb_host_uvc: ">=2.0"
   esp_lcd_ek79007: "1.*"
-  #espressif/esp32_p4_function_ev_board: "*"
-  espressif/esp_jpeg:
-    override_path: /home/peter/esp/idf-extra-components-fork/idf-extra-components/esp_jpeg
-  #espressif/esp_jpeg: "~1.2"
