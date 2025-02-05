@@ -29,24 +29,13 @@
 
 
 // Configs
-//#define EXAMPLE_USB_DEVICE_VID      CONFIG_DEMO_USB_UVC_DEVICE_VID              // Camera VID
-//#define EXAMPLE_USB_DEVICE_PID      CONFIG_DEMO_USB_UVC_DEVICE_PID              // Camera PID
-//#define FRAME_H_RES                 CONFIG_DEMO_USB_UVC_DEVICE_FRAME_H_RES      // Camera frame horizontal resolution
-//#define FRAME_V_RES                 CONFIG_DEMO_USB_UVC_DEVICE_FRAME_V_RES      // Camera frame vertical resolution
-
-#define EXAMPLE_USB_DEVICE_VID      0x32e4              // Camera VID
-#define EXAMPLE_USB_DEVICE_PID      0x9415              // Camera PID
-//#define FRAME_H_RES                 CONFIG_DEMO_USB_UVC_DEVICE_FRAME_H_RES      // Camera frame horizontal resolution
-#define FRAME_H_RES                 960      // Camera frame horizontal resolution
-//#define FRAME_V_RES                 CONFIG_DEMO_USB_UVC_DEVICE_FRAME_V_RES      // Camera frame vertical resolution
-#define FRAME_V_RES                 540      // Camera frame vertical resolution
-
-//#define FPS                         CONFIG_DEMO_USB_UVC_DEVICE_FPS              // Camera FPS
-//#define DECODE_EVERY_XTH_FRAME      CONFIG_DEMO_DECODE_EVERY_XTH_FRAME          // Every xth frame will be decoded and send to display. This save CPU time
-//#define NUMBER_OF_FRAME_BUFFERS     CONFIG_DEMO_FRAME_BUFFS_COUNT               // Number of frames from the camera
-#define FPS                         30              // Camera FPS
-#define DECODE_EVERY_XTH_FRAME      1          // Every xth frame will be decoded and send to display. This save CPU time
-#define NUMBER_OF_FRAME_BUFFERS     5               // Number of frames from the camera
+#define EXAMPLE_USB_DEVICE_VID      CONFIG_DEMO_USB_UVC_DEVICE_VID              // Camera VID
+#define EXAMPLE_USB_DEVICE_PID      CONFIG_DEMO_USB_UVC_DEVICE_PID              // Camera PID
+#define FRAME_H_RES                 1024 //CONFIG_DEMO_USB_UVC_DEVICE_FRAME_H_RES      // Camera frame horizontal resolution
+#define FRAME_V_RES                 768  //CONFIG_DEMO_USB_UVC_DEVICE_FRAME_V_RES      // Camera frame vertical resolution
+#define FPS                         30   //CONFIG_DEMO_USB_UVC_DEVICE_FPS              // Camera FPS
+#define SAVE_EVERY_XTH_FRAME        5   //CONFIG_DEMO_SAVE_EVERY_XTH_FRAME            // Every xth frame will be saved to flash drive
+#define NUMBER_OF_FRAME_BUFFERS     7    //CONFIG_DEMO_FRAME_BUFFS_COUNT               // Number of frames from the camera
 
 #define CONSOLE_PROMPT              CONFIG_IDF_TARGET
 
@@ -54,12 +43,28 @@ static const char *TAG = "esp-usb-demo";
 
 #define APP_QUEUE_CHECK(condition, warning_message) \
     do {                                           \
-        if (condition) {                           \
+        if (!condition) {                           \
             ESP_LOGW(TAG, warning_message);        \
             break;                                 \
         }                                          \
     } while (0)
 
+#define APP_ASSERT_CHECK(condition, warning_message)   \
+    do {                                           \
+        if (!condition) {                          \
+            ESP_LOGE(TAG, warning_message);        \
+            assert(true);                          \
+        }                                          \
+    } while (0)
+
+// Check if a frame starts with the SOI (start of image) marker 0xd8 and ends with the EOI (end of image) marker 0xd9
+#define CHECK_FRAME_COMPLETENESS(frame, complete) \
+    do { \
+        (complete) = ((frame)->data[0] == 0xff && \
+                      (frame)->data[1] == 0xd8 && \
+                      (frame)->data[(frame)->data_len - 2] == 0xff && \
+                      (frame)->data[(frame)->data_len - 1] == 0xd9); \
+    } while (0)
 
 /**
  * @brief Application Queue and its messages ID
@@ -104,6 +109,8 @@ static control_args_t stream_control_args, storage_control_args;
 
 static QueueHandle_t frame_queue = NULL;        // Queue of received frames that are passed to processing task
 static QueueHandle_t app_queue = NULL;          // Application Queue
+static QueueHandle_t save_queue = NULL;
+static TaskHandle_t  msc_save_task_handle = NULL;
 static esp_lcd_panel_handle_t display_panel;    // Display panel handle
 static jpeg_decoder_handle_t jpgd_handle = NULL;// JPEG Decoder handle
 
@@ -139,11 +146,11 @@ static int console_stream_control(int argc, char **argv)
         ESP_LOGI(TAG, "Console: video start");
 
         app_message_t stream_start_message = {
-                .id = APP_UVC_STREAM_START,
+            .id = APP_UVC_STREAM_START,
         };
         xQueueSend(app_queue, &stream_start_message, portMAX_DELAY);
 
-    // Stop argument
+        // Stop argument
     } else if (strcmp("stop", stream_control_args.action->sval[0]) == 0) {
         ESP_LOGI(TAG, "Console: video stop");
 
@@ -152,7 +159,7 @@ static int console_stream_control(int argc, char **argv)
         };
         xQueueSend(app_queue, &stream_stop_message, portMAX_DELAY);
 
-    // Invalid argument
+        // Invalid argument
     } else {
         ESP_LOGW(TAG, "Console: invalid argument: video %s", stream_control_args.action->sval[0]);
     }
@@ -183,20 +190,20 @@ static int console_storage_control(int argc, char **argv)
         ESP_LOGI(TAG, "Console: storage save start");
 
         app_message_t storage_start_message = {
-                .id = APP_MSC_STORAGE_START_SAVING_FRAMES,
+            .id = APP_MSC_STORAGE_START_SAVING_FRAMES,
         };
         xQueueSend(app_queue, &storage_start_message, portMAX_DELAY);
 
-    // Stop argument
+        // Stop argument
     } else if (strcmp("stop", storage_control_args.action->sval[0]) == 0) {
         ESP_LOGI(TAG, "Console: storage save stop");
 
         app_message_t storage_stop_message = {
-                .id = APP_MSC_STORAGE_STOP_SAVING_FRAMES,
+            .id = APP_MSC_STORAGE_STOP_SAVING_FRAMES,
         };
         xQueueSend(app_queue, &storage_stop_message, portMAX_DELAY);
 
-    // Invalid argument
+        // Invalid argument
     } else {
         ESP_LOGW(TAG, "Console: invalid argument: video %s", storage_control_args.action->sval[0]);
     }
@@ -260,7 +267,7 @@ static void init_repl_console(void)
  */
 static void msc_event_cb(const msc_host_event_t *event, void *arg)
 {
-    switch(event->event) {
+    switch (event->event) {
     case MSC_DEVICE_CONNECTED:
         ESP_LOGI(TAG, "MSC device connected (usb_addr=%d)", event->device.address);
 
@@ -301,6 +308,26 @@ bool frame_callback(const uvc_host_frame_t *frame, void *user_ctx)
     case UVC_VS_FORMAT_H264:
     case UVC_VS_FORMAT_H265:
     case UVC_VS_FORMAT_MJPEG: {
+
+        // Check if current frame is complete - if yes send it to queue
+        bool frame_complete = false;
+        CHECK_FRAME_COMPLETENESS(frame, frame_complete);
+        if (!frame_complete) {
+            ESP_LOGI(TAG, "Skipping frame");
+            frame_processed = true;
+            break;
+        }
+
+        //ESP_LOGI(TAG, "frame_cb %dx%d %d bytes", frame->vs_format.h_res, frame->vs_format.v_res, frame->data_len);
+        // Save frame to USB flash drive
+        static int frame_i = 0;
+        if (usb_devs_status.msc_opened && usb_devs_status.msc_saving_frames && ((frame_i % SAVE_EVERY_XTH_FRAME) == 0)) {
+            BaseType_t frame_put_to_queue = xQueueSendToBack(save_queue, &frame, 0);
+            if (frame_put_to_queue != pdTRUE) {
+                ESP_LOGW(TAG, "Failed to put %d frame into save queue", frame_i);
+            }
+        }
+        frame_i++;
         // Attempt to put the new frame into the queue without checking if it is full.
         // If successful, we save processing time since we avoid the overhead of a full check for every frame.
         BaseType_t frame_put_to_queue = xQueueSendToBack(frame_queue, &frame, 0);
@@ -354,40 +381,28 @@ static void frame_processing_task(void *pvParameters)
 {
     uvc_host_frame_t *frame;
     size_t rx_buffer_size;
-    uint8_t *rx_buf = (uint8_t*)jpeg_alloc_decoder_mem(FRAME_H_RES * FRAME_V_RES * 3, &rx_mem_cfg, &rx_buffer_size);
+    uint8_t *rx_buf = (uint8_t *)jpeg_alloc_decoder_mem(FRAME_H_RES * FRAME_V_RES * 3, &rx_mem_cfg, &rx_buffer_size);
     assert(rx_buf);
     uint32_t decoded_size = 0;
 
-    uvc_host_stream_hdl_t *stream_hdl = (uvc_host_stream_hdl_t*)pvParameters;
+    uvc_host_stream_hdl_t *stream_hdl = (uvc_host_stream_hdl_t *)pvParameters;
     assert(stream_hdl);
     assert(jpgd_handle);
+    static int frame_i = 0;
 
     while (1) {
         xQueueReceive(frame_queue, &frame, portMAX_DELAY);
-        ESP_LOGD(TAG, "MJPEG frame %dx%d %d bytes", frame->vs_format.h_res, frame->vs_format.v_res, frame->data_len);
+        //ESP_LOGI(TAG, "frame_task %dx%d %d bytes", frame->vs_format.h_res, frame->vs_format.v_res, frame->data_len);
+        //ESP_LOGD(TAG, "MJPEG frame %dx%d %d bytes", frame->vs_format.h_res, frame->vs_format.v_res, frame->data_len);
 
-        static int frame_i = 0;
-
-        if ((frame_i % DECODE_EVERY_XTH_FRAME) == 0) {
-
-            // Save frame to USB flash drive
-            if (usb_devs_status.msc_opened && usb_devs_status.msc_saving_frames) {
-                static unsigned int frame_save_count = 0;
-                msc_save_jpeg_frame(frame_save_count++, frame->data, frame->data_len);
-            }
-
-            frame_i = 0;
-            if (ESP_OK == jpeg_decoder_process(jpgd_handle, &decode_cfg, frame->data, frame->data_len, rx_buf, rx_buffer_size, &decoded_size)) {
-                ESP_LOGD(TAG, "Decoding OK");
-                esp_lcd_panel_draw_bitmap(display_panel, 0, 0, FRAME_H_RES, FRAME_V_RES, (const void *)rx_buf);
-            } else {
-                ESP_LOGW(TAG, "Decoding failed");
-            }
+        if (ESP_OK == jpeg_decoder_process(jpgd_handle, &decode_cfg, frame->data, frame->data_len, rx_buf, rx_buffer_size, &decoded_size)) {
+            ESP_LOGD(TAG, "Decoding OK");
+            esp_lcd_panel_draw_bitmap(display_panel, 0, 0, FRAME_H_RES, FRAME_V_RES, (const void *)rx_buf);
         } else {
-            ESP_LOGD(TAG, "Skipping decoding of received MJPEG frame");
+            ESP_LOGW(TAG, "Decoding failed %d", frame_i);
         }
-        frame_i++;
 
+        frame_i++;
         uvc_host_frame_return(*stream_hdl, frame);
     }
 
@@ -397,14 +412,43 @@ static void frame_processing_task(void *pvParameters)
 }
 
 
+static void msc_save_task(void *pvParameters)
+{
+    uvc_host_stream_config_t *stream_config = (uvc_host_stream_config_t *)pvParameters;
+    uvc_host_frame_t *frame;
+    static int save_frame_count = 0;
+    uint8_t *this_data = heap_caps_malloc(stream_config->advanced.frame_size, MALLOC_CAP_SPIRAM);
+    assert(this_data);
+    size_t this_data_len;
+
+    while (1) {
+        xQueueReceive(save_queue, &frame, portMAX_DELAY);
+        //ESP_LOGI(TAG, "save_task %d %dx%d %d bytes",save_frame_count, frame->vs_format.h_res, frame->vs_format.v_res, frame->data_len);
+
+        this_data_len = frame->data_len;
+        memcpy(this_data, frame->data, this_data_len);
+        //int64_t start = esp_timer_get_time();
+        esp_err_t ret = msc_save_jpeg_frame(save_frame_count, this_data, this_data_len);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Frame %d saved", save_frame_count);
+        } else {
+            ESP_LOGW(TAG, "Frame %d not saved: %s", save_frame_count, esp_err_to_name(ret));
+        }
+        //int64_t end = esp_timer_get_time();
+        //ESP_LOGI(TAG, "start = %lld end = %lld, data = %ld", start, end, this_data_len);
+        //ESP_LOGI(TAG, "Write speed %1.2f MiB/s", (this_data_len) / (float)(end - start));
+        save_frame_count++;
+    }
+}
+
 /**
  * @brief Initialize HW JPEG Decoder
  */
 static void init_jpeg_decode_engine(void)
 {
     jpeg_decode_engine_cfg_t decode_eng_cfg = {
-        .intr_priority = 3,
-        .timeout_ms = 20,
+        .intr_priority = 0,
+        .timeout_ms = 30,
     };
 
     ESP_ERROR_CHECK(jpeg_new_decoder_engine(&decode_eng_cfg, &jpgd_handle));
@@ -417,7 +461,7 @@ static void init_jpeg_decode_engine(void)
 static void usb_task(void *args)
 {
     ESP_LOGI(TAG, "Installing USB Host");
-    const usb_host_config_t host_config = { 
+    const usb_host_config_t host_config = {
         .intr_flags = ESP_INTR_FLAG_LEVEL1,
         .skip_phy_setup = false,
         .enum_filter_cb = NULL,
@@ -475,29 +519,32 @@ static void usb_task(void *args)
 
 void app_main(void)
 {
+    // Init BSP
     esp_lcd_panel_io_handle_t display_io;
     const bsp_display_config_t config = {};
 
     bsp_display_new(&config, &display_panel, &display_io);
     bsp_display_backlight_on();
 
-    // Create application message queue and frame queue
+    // Create queues: application, frame, save
     app_queue = xQueueCreate(5, sizeof(app_message_t));
-    frame_queue = xQueueCreate(NUMBER_OF_FRAME_BUFFERS, sizeof (uvc_host_frame_t *));
-    assert(app_queue || frame_queue);
+    frame_queue = xQueueCreate(NUMBER_OF_FRAME_BUFFERS, sizeof(uvc_host_frame_t *));
+    save_queue = xQueueCreate(NUMBER_OF_FRAME_BUFFERS, sizeof(uvc_host_frame_t *));
+    APP_ASSERT_CHECK(app_queue && frame_queue && save_queue, "Failed to create Freertos Queues");
 
     // Create USB Host Lib handling task, install drivers
-    BaseType_t task_created = xTaskCreate(usb_task, "usb_task", 4 * 1024, xTaskGetCurrentTaskHandle(), 10, NULL);
-    assert(task_created == pdTRUE);
+    BaseType_t task_created;
+    task_created = xTaskCreate(usb_task, "usb_task", 4 * 1024, xTaskGetCurrentTaskHandle(), 10, NULL);
+    APP_ASSERT_CHECK(task_created, "Failed to create usb_task");
 
     init_repl_console();                        // Init console
     init_jpeg_decode_engine();                  // Init JPEG HW Decoder
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);    // Wait until the drivers are installed
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);    // Wait until the USB Host drivers are installed
 
     // Create frame processing task
     uvc_host_stream_hdl_t stream_hdl = NULL;
-    task_created = xTaskCreate(frame_processing_task, "frame_task", 4 * 1024, (void*)(&stream_hdl), 2, NULL);
-    assert(task_created == pdTRUE);
+    task_created = xTaskCreatePinnedToCore(frame_processing_task, "frame_task", 4 * 1024, (void *)(&stream_hdl), 2, NULL, 0);
+    APP_ASSERT_CHECK(task_created, "Failed to create frame_task");
 
     // Stream config
     const uvc_host_stream_config_t stream_config = {
@@ -517,16 +564,20 @@ void app_main(void)
         },
         .advanced = {
             .number_of_frame_buffers = NUMBER_OF_FRAME_BUFFERS,
-            .frame_size = 120 * 1024,
-    #if CONFIG_SPIRAM
+            .frame_size = 150 * 1024,
+#if CONFIG_SPIRAM
             .frame_heap_caps = MALLOC_CAP_SPIRAM,
-    #else
+#else
             .frame_heap_caps = 0,
-    #endif
+#endif
             .number_of_urbs = 3,
             .urb_size = 4 * 1024,
         },
     };
+
+    // Create task for saving frames to flash drive
+    task_created = xTaskCreatePinnedToCore(msc_save_task, "msc_save_task", 4 * 1024, (void *)(&stream_config), 10, &msc_save_task_handle, 1);
+    APP_ASSERT_CHECK(task_created && msc_save_task_handle, "Failed to create usb_task");
 
     // Init devices status
     usb_devs_status.msc_opened = false;
@@ -535,7 +586,7 @@ void app_main(void)
     usb_devs_status.uvc_streaming = false;
 
     TickType_t app_queue_ticks = pdMS_TO_TICKS(500);
-    while(1) {
+    while (1) {
         app_message_t msg;
 
         if (!usb_devs_status.uvc_opened) {
@@ -555,18 +606,19 @@ void app_main(void)
             }
         }
 
-        if (xQueueReceive(app_queue, &msg, app_queue_ticks)){
+        if (xQueueReceive(app_queue, &msg, app_queue_ticks)) {
             switch (msg.id) {
             case APP_MSC_DEVICE_CONNECTED:
                 ESP_LOGI(TAG, "MSC Device connected -> Init MSC Device");
 
                 // Check if MSC device already connected
-                APP_QUEUE_CHECK(usb_devs_status.msc_opened, "Another MSC device already connected, the demo can handle only one MSC device at a time");
+                APP_QUEUE_CHECK(!usb_devs_status.msc_opened, "Another MSC device already connected, the demo can handle only one MSC device at a time");
                 msc_init_device(msg.data.new_msc_dev_address);
 
                 // Record MSC device opened
                 usb_devs_status.msc_opened = true;
                 usb_devs_status.msc_saving_frames = true;
+                ESP_LOGI(TAG, "MSC Device start saving frames to flash storage");
                 break;
             case APP_MSC_DEVICE_DISCONNECTED:
                 ESP_LOGI(TAG, "MSC Device disconnected -> De-Init MSC Device");
@@ -580,9 +632,9 @@ void app_main(void)
                 ESP_LOGI(TAG, "MSC Device start saving frames to flash storage");
 
                 // MSC device must be opened first
-                APP_QUEUE_CHECK(!usb_devs_status.msc_opened, "Can't start saving frames to storage, MSC device not opened");
+                APP_QUEUE_CHECK(usb_devs_status.msc_opened, "Can't start saving frames to storage, MSC device not opened");
                 // Check if already saving frames
-                APP_QUEUE_CHECK(usb_devs_status.msc_saving_frames, "MSC device already saving frames to storage");
+                APP_QUEUE_CHECK(!usb_devs_status.msc_saving_frames, "MSC device already saving frames to storage");
 
                 // Record MS device saving frames to storage
                 usb_devs_status.msc_saving_frames = true;
@@ -592,9 +644,9 @@ void app_main(void)
                 ESP_LOGI(TAG, "MSC Device stop saving frames to flash storage");
 
                 // MSC device must be opened first
-                APP_QUEUE_CHECK(!usb_devs_status.msc_opened, "Can't stop saving frames to storage, MSC device not opened");
+                APP_QUEUE_CHECK(usb_devs_status.msc_opened, "Can't stop saving frames to storage, MSC device not opened");
                 // Check if already stopped saving frames
-                APP_QUEUE_CHECK(!usb_devs_status.msc_saving_frames, "MSC device already stopped saving frames to storage");
+                APP_QUEUE_CHECK(usb_devs_status.msc_saving_frames, "MSC device already stopped saving frames to storage");
 
                 // Record MS device not saving frames to storage
                 usb_devs_status.msc_saving_frames = false;
@@ -611,9 +663,9 @@ void app_main(void)
                 ESP_LOGI(TAG, "UVC Starting stream");
 
                 // UVC device must be opened first
-                APP_QUEUE_CHECK(!usb_devs_status.uvc_opened, "Can't start stream, UVC device not opened");
+                APP_QUEUE_CHECK(usb_devs_status.uvc_opened, "Can't start stream, UVC device not opened");
                 // Check if UVC Device is already streaming
-                APP_QUEUE_CHECK(usb_devs_status.uvc_streaming, "UVC Device already streaming");
+                APP_QUEUE_CHECK(!usb_devs_status.uvc_streaming, "UVC Device already streaming");
                 ESP_ERROR_CHECK(uvc_host_stream_start(stream_hdl));
 
                 // Record UVC device streaming
@@ -623,9 +675,9 @@ void app_main(void)
                 ESP_LOGI(TAG, "UVC Stopping stream");
 
                 // UVC device must be opened first
-                APP_QUEUE_CHECK(!usb_devs_status.uvc_opened, "Can't stop stream, UVC device not opened");
+                APP_QUEUE_CHECK(usb_devs_status.uvc_opened, "Can't stop stream, UVC device not opened");
                 // Check if UVC Device is already stopped
-                APP_QUEUE_CHECK(!usb_devs_status.uvc_streaming, "UVC Device stream already stopped");
+                APP_QUEUE_CHECK(usb_devs_status.uvc_streaming, "UVC Device stream already stopped");
                 ESP_ERROR_CHECK(uvc_host_stream_stop(stream_hdl));
 
                 // Record UVC device not streaming

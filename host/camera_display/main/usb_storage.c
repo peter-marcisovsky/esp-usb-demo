@@ -53,7 +53,7 @@ static void print_msc_device_info(msc_host_device_info_t *info)
 #endif
 }
 
-void msc_init_device(uint8_t new_device_address)
+esp_err_t msc_init_device(uint8_t new_device_address)
 {
     // 1. MSC flash drive connected. Open it and map it to Virtual File System
     ESP_ERROR_CHECK(msc_host_install_device(new_device_address, &msc_device));
@@ -68,7 +68,7 @@ void msc_init_device(uint8_t new_device_address)
     msc_host_device_info_t info;
     ESP_ERROR_CHECK(msc_host_get_device_info(msc_device, &info));
     print_msc_device_info(&info);
-    msc_host_print_descriptors(msc_device);
+    //msc_host_print_descriptors(msc_device);
 
     // 3. List all the files in root directory
     ESP_LOGI(TAG, "ls command output:");
@@ -95,14 +95,15 @@ void msc_init_device(uint8_t new_device_address)
         FILE *f = fopen(info_file_path, "w");
         if (f == NULL) {
             ESP_LOGE(TAG, "Failed to open file for writing");
-            return;
+            return ESP_ERR_NOT_FOUND;
         }
         fprintf(f, "This is an ESP-USB Demo\n");
         fclose(f);
     }
+    return ESP_OK;
 }
 
-void msc_deinit_device(void)
+esp_err_t msc_deinit_device(void)
 {
     if (vfs_handle) {
         ESP_ERROR_CHECK(msc_host_vfs_unregister(vfs_handle));
@@ -112,23 +113,29 @@ void msc_deinit_device(void)
         ESP_ERROR_CHECK(msc_host_uninstall_device(msc_device));
         msc_device = NULL;
     }
+    return ESP_OK;
 }
 
-void msc_save_jpeg_frame(int frame_i, uint8_t *frame_data, size_t frame_len)
+esp_err_t msc_save_jpeg_frame(int frame_i, uint8_t *frame_data, size_t frame_len)
 {
+    esp_err_t ret = ESP_OK;
     char file_path[64];
     sprintf(file_path, "%s/%d.jpg", directory_frames, frame_i);
-
     FILE *f = fopen(file_path, "w");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open file %s for writing", file_path);
+        return ESP_ERR_NOT_FOUND;
     } else {
+        setvbuf(f, NULL, _IOFBF, frame_len);
         size_t written = fwrite(frame_data, 1, frame_len, f);
         if (written != frame_len) {
             ESP_LOGE(TAG, "Failed to write entire frame to file");
+            ret = ESP_ERR_INVALID_SIZE;
         } else {
             ESP_LOGD(TAG, "Saved frame to %s", file_path);
+            ret = ESP_OK;
         }
         fclose(f);
     }
+    return ret;
 }
