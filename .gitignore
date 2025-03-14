@@ -1,0 +1,10 @@
+**/dist/**
+**/build*/**
+**/__pycache__/**
+sdkconfig
+sdkconfig.old
+dependencies.lock
+**/managed_components/**
+.vscode/
+doxygen/
+warnings.txt
