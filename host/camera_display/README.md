@@ -6,9 +6,9 @@
 ## Overview
 
 This demo is using a following (sub)components:
-- [USB Host stack](https://github.com/espressif/esp-idf/tree/master/components/usb)
+- [USB Host stack](https://github.com/espressif/esp-usb)
 - [USB UVC driver](https://github.com/espressif/esp-usb/tree/master/host/class/uvc/usb_host_uvc)
-- [External USB Hub driver](https://github.com/espressif/esp-idf/tree/master/components/usb)
+- [External USB Hub driver](https://github.com/espressif/esp-usb)
 - [Hardware JPEG Decoder](https://github.com/espressif/esp-idf/tree/master/components/esp_driver_jpeg)
 - [PPA (Per Pixel Accelerator)](https://github.com/espressif/esp-idf/tree/master/components/esp_driver_ppa)
 - [LCD Display driver](https://github.com/espressif/esp-iot-solution/tree/master/components/display/lcd/esp_lcd_ek79007)
@@ -27,7 +27,7 @@ Up to 2 USB Cameras, connected via an external USB hub into a HS USB port of [ES
 
 User can interact with the demo using console.
 
-```
+```shell
 esp32p4> help
 help  [<string>] [-v <0|1>]
   Print the summary of all registered commands if no arguments are given,
@@ -43,7 +43,7 @@ stream  [-S <stream_id>] [-T <stream_id>]
 
 User can start or stop a specific video stream
 
-```
+```shell
 esp32p4> stream -T 0
 I (92728) esp-usb-demo: Console: stream stop
 I (92828) esp-usb-demo: Stream 0 stopped
@@ -75,7 +75,7 @@ Camera resolution in both modes are selected in respect to the [ESP32-P4-Functio
 
 Below is a sample output of the demo, with an external USB Hub and both USB cameras already connected to the `esp32p4` HS USB port. The USB cameras are then unplugged and plugged back in.
 
-```
+```shell
 I (1316) main_task: Started on CPU0
 I (1326) esp_psram: Reserving pool of 32K of internal memory for DMA/internal allocations
 I (1326) main_task: Calling app_main()
@@ -128,7 +128,7 @@ I (10846) esp-usb-demo: Device suddenly disconnected
 I (10846) esp-usb-demo: UVC Device disconnected -> Close the UVC stream
 ...
 
-FIrst camera connected to external USB Hub
+First camera connected to external USB Hub
 
 ...
 I (14196) esp-usb-demo: UVC Device connected -> Open the UVC stream
@@ -150,3 +150,16 @@ I (18016) esp-usb-demo: Stream opened, streaming...
 I (18016) esp-usb-demo: UVC device opened, opening stream
 I (18026) esp-usb-demo: Setting resolution to half
 I (18066) esp-usb-demo: Stream opened, streaming...
+```
+
+## Hardware needed
+
+- [ESP32-P4-Function-EV-Board](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32p4/esp32-p4-function-ev-board/index.html)
+- Up-to 2 USB cameras (cameras resolutions shall be configured using `idf.py menuconfig` before running the demo)
+- external usb hub
+
+## Set-up of the demo
+
+- Connect the external hub to the [ESP32-P4-Function-EV-Board's](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32p4/esp32-p4-function-ev-board/index.html) HS USB Host port
+- Connect a single, or both USB Cameras to the external hub
+- Flash and run the demo
