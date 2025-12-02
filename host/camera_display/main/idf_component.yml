@@ -1,5 +1,5 @@
 ## IDF Component Manager Manifest File
 dependencies:
-  idf: ">=5.5"
+  idf: ">=6.0"
   usb_host_uvc: ">=2.0"
-  esp_lcd_ek79007: "1.*"
+  esp_lcd_ek79007: ">=2.0.1"
