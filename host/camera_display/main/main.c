@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2025 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2025-2026 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -511,15 +511,12 @@ static void ppa_srm_config(ppa_srm_oper_config_t *ppa_srm_oper_config, const uvc
     const unsigned int frame_h_res = stream_config->vs_format.h_res;
     const unsigned int frame_v_res = stream_config->vs_format.v_res;
 
-    const ppa_srm_color_mode_t in_cm = PPA_SRM_COLOR_MODE_RGB565;
-    const ppa_srm_color_mode_t out_cm = PPA_SRM_COLOR_MODE_RGB565;
     const ppa_srm_rotation_angle_t rotation = PPA_SRM_ROTATION_ANGLE_90;
     const float scale = 1.0;
 
-    const color_space_pixel_format_t out_pixel_format = {
-        .color_type_id = out_cm,
-    };
-    const uint32_t out_buf_size = ALIGN_UP(frame_h_res * frame_v_res * color_hal_pixel_format_get_bit_depth(out_pixel_format) / 8, 64);
+    const esp_color_fourcc_t in_cm = PPA_SRM_COLOR_MODE_RGB565;
+    const esp_color_fourcc_t out_cm = PPA_SRM_COLOR_MODE_RGB565;
+    const uint32_t out_buf_size = ALIGN_UP(frame_h_res * frame_v_res * color_hal_pixel_format_fourcc_get_bit_depth(out_cm) / 8, 64);
 
     const ppa_srm_oper_config_t oper_config = {
         .in.buffer = in_buf,
